@@ -1,0 +1,362 @@
+<title>로스팅 측정값 대시보드</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<!-- 엑셀 읽기 라이브러리 (SheetJS). 회사 데이터는 이 페이지에 없음: 보는 사람이 고른 엑셀을 그 사람 브라우저 안에서만 읽음 -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  /* 배치 단위로 훑어보는 품질 점검 화면: 위에서 아래로 검토 요청 → 선택 → 범위 → 측정값 */
+  :root {
+    --bg: #f5f3f0; --card: #ffffff; --head: #fbfaf8; --text: #231c17; --muted: #6e645c; --line: #e4ded7;
+    --accent: #6b4226; --on-accent: #ffffff;
+    --bad: #b3261e; --bad-bg: #fbe9e7; --warn: #6d5400; --warn-bg: #fff3a8;
+    --font: "Pretendard", "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1a1613; --card: #241f1b; --head: #2b2521; --text: #eee7e1; --muted: #a99d93; --line: #3a322c;
+      --accent: #c9905f; --on-accent: #1a1613;
+      --bad: #ff8a80; --bad-bg: #4a1f1b; --warn: #ffe27a; --warn-bg: #4a3d0d;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1a1613; --card: #241f1b; --head: #2b2521; --text: #eee7e1; --muted: #a99d93; --line: #3a322c;
+    --accent: #c9905f; --on-accent: #1a1613;
+    --bad: #ff8a80; --bad-bg: #4a1f1b; --warn: #ffe27a; --warn-bg: #4a3d0d;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; }
+  header { background: var(--accent); color: var(--on-accent);
+           padding-block: 14px; padding-left: max(16px, env(safe-area-inset-left, 0px));
+           padding-right: max(16px, env(safe-area-inset-right, 0px));
+           display: flex; align-items: center; gap: 12px 16px; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; text-wrap: balance; }
+  header .file { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+  #fileInfo { overflow-wrap: anywhere; }
+  label.btn { background: var(--card); color: var(--accent); padding: 8px 14px; border-radius: 6px;
+              cursor: pointer; font-weight: bold; white-space: nowrap; }
+  label.btn:focus-within { outline: 3px solid var(--text); outline-offset: 2px; }
+  input[type=file] { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  main { max-width: 1100px; margin: 0 auto; padding-block: 16px;
+         padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+         display: flex; flex-direction: column; gap: 16px; }
+  #content { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  main > *, #content > * { min-width: 0; max-width: 100%; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 16px; min-width: 0; }
+  .card h2 { font-size: 15px; margin: 0 0 12px; color: var(--accent); }
+  .row { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; max-width: 100%; }
+  .field span { color: var(--muted); font-size: 12px; letter-spacing: .02em; }
+  select { padding: 7px 8px; font-size: 14px; border: 1px solid var(--line); border-radius: 6px;
+           min-width: 160px; max-width: 100%; background: var(--card); color: var(--text); font-family: inherit; }
+  select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+  .stat { border: 1px solid var(--line); border-radius: 8px; padding: 12px; min-width: 0; }
+  .stat .label { color: var(--muted); font-size: 12px; }
+  .stat .big { font-size: 22px; font-weight: bold; margin: 4px 0; font-variant-numeric: tabular-nums; }
+  .stat .sub { color: var(--muted); font-size: 12px; line-height: 1.6; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+  th { background: var(--head); color: var(--muted); font-weight: normal; position: sticky; top: 0; }
+  td.l, th.l { text-align: left; }
+  .scroll { max-height: 460px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; }
+  .bad { color: var(--bad); font-weight: bold; }
+  tr.outlier td { background: var(--bad-bg); }
+  td.check { background: var(--warn-bg); }
+  .note { color: var(--muted); font-size: 12px; margin-top: 8px; line-height: 1.6; }
+  .tag { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 4px; margin-right: 4px; }
+  .tag.r { background: var(--bad-bg); color: var(--bad); }
+  .tag.y { background: var(--warn-bg); color: var(--warn); }
+  .empty { color: var(--muted); text-align: center; padding: 24px 0; }
+  #errorMsg { background: var(--bad-bg); color: var(--bad); border-radius: 8px; padding: 12px 16px; }
+  .start { padding: 28px 20px; line-height: 1.8; }
+  .start h2 { font-size: 17px; }
+  .start ol { margin: 8px 0 0; padding-left: 20px; max-width: 65ch; }
+  .start code { background: var(--head); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+</style>
+
+<header>
+  <h1>로스팅 측정값 대시보드</h1>
+  <div class="file">
+    <span id="fileInfo">엑셀 파일을 골라 주세요</span>
+    <label class="btn" for="fileInput">엑셀 파일 선택</label>
+    <input type="file" id="fileInput" accept=".xlsx">
+  </div>
+</header>
+
+<main>
+  <div id="errorMsg" role="alert" hidden></div>
+
+  <section id="emptyMsg" class="card start">
+    <h2>엑셀을 고르면 바로 보여요</h2>
+    <ol>
+      <li>오른쪽 위 <b>엑셀 파일 선택</b>을 눌러 <code>로스팅일지.xlsx</code>를 골라요.</li>
+      <li>맨 위 <b>검토 요청</b>에서 특이값을 종이 일지와 비교해요.</li>
+      <li>기준 L값과 제품을 고르면 <b>적정 규격 범위</b>와 측정값이 나와요.</li>
+    </ol>
+    <p class="note">엑셀은 이 브라우저 안에서만 읽어요. 파일이 어디로도 올라가거나 저장되지 않아요.
+      엑셀에는 <code>전체기록</code> 시트가 있어야 해요.</p>
+  </section>
+
+  <div id="content" hidden>
+    <!-- 검토 요청 (특이값은 사용 전 담당자 검토) -->
+    <section class="card">
+      <h2>검토 요청 — 특이값 (전체 제품)</h2>
+      <div id="reviewSummary" class="note" style="margin:0 0 8px"></div>
+      <div class="scroll" style="max-height:300px"><table id="review"></table></div>
+      <div class="note">평균·최대·최소 계산에서 뺀 값이에요. 엑셀에는 그대로 남아 있으니, 사용 전에 종이 일지와 비교해 주세요.</div>
+    </section>
+
+    <!-- ① 선택 -->
+    <section class="card">
+      <h2>① 선택</h2>
+      <div class="row">
+        <label class="field"><span>기준 L값</span><select id="selBaseL"></select></label>
+        <label class="field"><span>제품</span><select id="selProduct"></select></label>
+      </div>
+    </section>
+
+    <!-- ③ 적정 규격 범위 -->
+    <section class="card">
+      <h2>③ 적정 규격 범위</h2>
+      <div class="grid" id="rangeCards"></div>
+      <div class="note">
+        L값: 기준 L값 ±0.3 (기준이 범위면 범위 양 끝에서 ±0.3) · Agtron: 특이값을 뺀 전체 평균 ±5 ·
+        Agtron 특이값 = 그 제품 전체 측정값 중간값 ±5 밖
+      </div>
+    </section>
+
+    <!-- ② 측정값 -->
+    <section class="card">
+      <h2>② 측정값 — 전체 요약 (특이값 제외)</h2>
+      <div class="grid" id="summaryCards"></div>
+    </section>
+
+    <section class="card">
+      <h2>② 측정값 — 로스팅 일자별</h2>
+      <div class="scroll"><table id="byDate"></table></div>
+    </section>
+
+    <section class="card">
+      <h2>② 측정값 — 배치별 (전체 측정값)</h2>
+      <div class="scroll"><table id="byBatch"></table></div>
+      <div class="note">
+        <span class="tag r">특이값</span> 평균·최대·최소 계산에서 뺀 값 ·
+        <span class="tag y">판독 확인</span> 손글씨를 읽기 어려워 엑셀에 노란색으로 표시된 줄 (사용 전 확인 필요)
+      </div>
+    </section>
+  </div>
+</main>
+
+<script>
+const L_RANGE = 0.3;
+const AGTRON_RANGE = 5;
+
+let rows = [];
+
+const $ = (id) => document.getElementById(id);
+const num = (v) => (v === null || v === undefined || v === "" || isNaN(Number(v))) ? null : Number(v);
+const fmt = (v, d) => (v === null || v === undefined) ? "-" : v.toFixed(d);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function showError(msg) { $("errorMsg").textContent = msg; $("errorMsg").hidden = false; }
+function clearError() { $("errorMsg").hidden = true; }
+
+// 기준 L값: 숫자 또는 범위 글자(예: "19.5~20.0")
+function parseBase(v) {
+  const s = String(v ?? "").replace(/\s/g, "");
+  if (!s) return { text: null, low: null, high: null };
+  const parts = s.split("~");
+  const low = Number(parts[0]), high = Number(parts[parts.length - 1]);
+  if (isNaN(low) || isNaN(high)) return { text: null, low: null, high: null };
+  return { text: low === high ? String(low) : s, low, high };
+}
+function median(vals) {
+  if (!vals.length) return null;
+  const s = [...vals].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+function stats(vals) {
+  if (!vals.length) return { n: 0, max: null, min: null, avg: null };
+  return { n: vals.length, max: Math.max(...vals), min: Math.min(...vals),
+           avg: vals.reduce((a, b) => a + b, 0) / vals.length };
+}
+
+// ---------- 엑셀 읽기 ----------
+$("fileInput").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  clearError();
+  try {
+    const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
+    loadWorkbook(wb, file.name);
+  } catch (err) {
+    showError("엑셀 파일을 읽지 못했어요. .xlsx 파일이 맞는지 확인해 주세요. (" + err.message + ")");
+  }
+});
+
+function loadWorkbook(wb, fileName) {
+  const ws = wb.Sheets["전체기록"];
+  if (!ws) { showError("이 엑셀에는 '전체기록' 시트가 없어요. 로스팅일지.xlsx 파일을 골라 주세요."); return; }
+  const raw = XLSX.utils.sheet_to_json(ws, { defval: "" });
+  rows = raw.map((r) => { const b = parseBase(r["기준 L값"]); return {
+    date: String(r["로스팅 일자"]),
+    batch: num(r["배치 번호"]),
+    name: String(r["제품명"]),
+    code: String(r["제품코드"]),
+    baseL: b.text, baseLow: b.low, baseHigh: b.high,
+    L: num(r["L값"]),
+    ag: num(r["Agtron값"]),
+    note: String(r["특이사항"] || ""),
+    roaster: String(r["배전기명"] || ""),
+  }; }).filter((r) => r.code);
+  if (!rows.length) { showError("'전체기록' 시트에 기록이 없어요."); return; }
+
+  markOutliers();
+  $("fileInfo").textContent = `${fileName} · ${rows.length}줄`;
+  $("emptyMsg").hidden = true;
+  $("content").hidden = false;
+  renderReview();
+  buildBaseLSelect();
+}
+
+// ---------- 특이값 ----------
+function markOutliers() {
+  const byCode = {};
+  rows.forEach((r) => { if (r.ag !== null) (byCode[r.code] ||= []).push(r.ag); });
+  const med = {};
+  Object.keys(byCode).forEach((c) => { med[c] = median(byCode[c]); });
+  rows.forEach((r) => {
+    r.agMedian = med[r.code] ?? null;
+    r.lOut = r.L !== null && r.baseLow !== null &&
+      (Math.round((r.baseLow - r.L) * 100) / 100 > L_RANGE || Math.round((r.L - r.baseHigh) * 100) / 100 > L_RANGE);
+    r.agOut = r.ag !== null && r.agMedian !== null && Math.round(Math.abs(r.ag - r.agMedian) * 100) / 100 > AGTRON_RANGE;
+    r.check = r.note.includes("판독") || r.L === null || r.ag === null;
+  });
+}
+
+// ---------- 검토 요청 목록 ----------
+function renderReview() {
+  const out = rows.filter((r) => r.lOut || r.agOut)
+    .sort((a, b) => b.date.localeCompare(a.date) || a.roaster.localeCompare(b.roaster) || a.batch - b.batch);
+  const checkN = rows.filter((r) => r.check).length;
+  $("reviewSummary").textContent = `특이값 ${out.length}배치 · 판독 확인 필요(노란 칸) ${checkN}배치`;
+  $("review").innerHTML = out.length ? `
+    <tr><th class="l">로스팅 일자</th><th class="l">배전기</th><th>배치</th><th class="l">제품</th>
+        <th>기준 L</th><th>L값</th><th>Agtron</th><th>Agtron 중간값</th><th class="l">사유</th></tr>` +
+    out.map((r) => `<tr>
+        <td class="l">${esc(r.date)}</td><td class="l">${esc(r.roaster)}</td><td>${r.batch ?? "-"}</td>
+        <td class="l">${esc(r.name)} (${esc(r.code)})</td><td>${esc(r.baseL ?? "-")}</td>
+        <td class="${r.lOut ? "bad" : ""}">${fmt(r.L, 2)}</td>
+        <td class="${r.agOut ? "bad" : ""}">${fmt(r.ag, 1)}</td><td>${fmt(r.agMedian, 1)}</td>
+        <td class="l">${r.lOut ? `<span class="tag r">L 기준 ±${L_RANGE} 밖</span>` : ""}${
+          r.agOut ? `<span class="tag r">Agtron 중간값 ±${AGTRON_RANGE} 밖</span>` : ""}${
+          r.check ? `<span class="tag y">판독 확인</span>` : ""}</td></tr>`).join("")
+    : `<tr><td class="empty">특이값이 없어요.</td></tr>`;
+}
+
+// ---------- ① 선택 ----------
+function productsFor(baseL) {
+  const map = new Map();
+  rows.forEach((r) => {
+    if (baseL !== "all" && r.baseL !== baseL) return;
+    if (!map.has(r.code)) map.set(r.code, { code: r.code, name: r.name, n: 0 });
+    map.get(r.code).n++;
+  });
+  return [...map.values()].sort((a, b) => b.n - a.n);
+}
+function buildBaseLSelect() {
+  const vals = [...new Set(rows.map((r) => r.baseL).filter((v) => v !== null))]
+    .sort((a, b) => parseFloat(a) - parseFloat(b) || a.localeCompare(b));
+  $("selBaseL").innerHTML = `<option value="all">전체</option>` +
+    vals.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
+  buildProductSelect();
+}
+function buildProductSelect() {
+  const list = productsFor($("selBaseL").value);
+  $("selProduct").innerHTML = list.map((p) =>
+    `<option value="${esc(p.code)}">${esc(p.name)} (${esc(p.code)}) · ${p.n}배치</option>`).join("");
+  render();
+}
+$("selBaseL").addEventListener("change", buildProductSelect);
+$("selProduct").addEventListener("change", render);
+
+// ---------- 화면 그리기 ----------
+function render() {
+  const code = $("selProduct").value;
+  const sel = rows.filter((r) => r.code === code)
+    .sort((a, b) => a.date.localeCompare(b.date) || a.roaster.localeCompare(b.roaster) || a.batch - b.batch);
+  if (!sel.length) {
+    $("rangeCards").innerHTML = $("summaryCards").innerHTML = "";
+    $("byDate").innerHTML = $("byBatch").innerHTML = "";
+    return;
+  }
+  const baseL = sel[0].baseL, baseLow = sel[0].baseLow, baseHigh = sel[0].baseHigh;
+  const lGood = sel.filter((r) => r.L !== null && !r.lOut).map((r) => r.L);
+  const agGood = sel.filter((r) => r.ag !== null && !r.agOut).map((r) => r.ag);
+  const lS = stats(lGood), agS = stats(agGood);
+  const lOutN = sel.filter((r) => r.lOut).length;
+  const agOutN = sel.filter((r) => r.agOut).length;
+  const checkN = sel.filter((r) => r.check).length;
+
+  $("rangeCards").innerHTML = `
+    <div class="stat">
+      <div class="label">L값 적정 범위 (기준 ${esc(baseL ?? "-")} ±${L_RANGE})</div>
+      <div class="big">${baseLow === null ? "-" : fmt(baseLow - L_RANGE, 2) + " ~ " + fmt(baseHigh + L_RANGE, 2)}</div>
+      <div class="sub">범위 밖 ${lOutN}배치</div>
+    </div>
+    <div class="stat">
+      <div class="label">Agtron 적정 범위 (평균 ${fmt(agS.avg, 1)} ±${AGTRON_RANGE})</div>
+      <div class="big">${agS.avg === null ? "-" : fmt(agS.avg - AGTRON_RANGE, 1) + " ~ " + fmt(agS.avg + AGTRON_RANGE, 1)}</div>
+      <div class="sub">중간값 ${fmt(sel[0].agMedian, 1)} · 평균에 쓴 값 ${agS.n}개 · 특이값으로 뺀 값 ${agOutN}개</div>
+    </div>`;
+
+  $("summaryCards").innerHTML = `
+    <div class="stat">
+      <div class="label">L값</div>
+      <div class="big">평균 ${fmt(lS.avg, 2)}</div>
+      <div class="sub">최대 ${fmt(lS.max, 2)} · 최소 ${fmt(lS.min, 2)} · ${lS.n}개</div>
+    </div>
+    <div class="stat">
+      <div class="label">Agtron</div>
+      <div class="big">평균 ${fmt(agS.avg, 1)}</div>
+      <div class="sub">최대 ${fmt(agS.max, 1)} · 최소 ${fmt(agS.min, 1)} · ${agS.n}개</div>
+    </div>
+    <div class="stat">
+      <div class="label">기록</div>
+      <div class="big">${sel.length}배치</div>
+      <div class="sub">로스팅 일자 ${new Set(sel.map((r) => r.date)).size}일 · 판독 확인 필요 ${checkN}배치</div>
+    </div>`;
+
+  const dates = [...new Set(sel.map((r) => r.date))];
+  $("byDate").innerHTML = `
+    <tr><th class="l">로스팅 일자</th><th>배치 수</th><th>L 평균</th><th>L 최소~최대</th>
+        <th>Agtron 평균</th><th>Agtron 최소~최대</th><th>특이값</th></tr>` +
+    dates.map((d) => {
+      const g = sel.filter((r) => r.date === d);
+      const l = stats(g.filter((r) => r.L !== null && !r.lOut).map((r) => r.L));
+      const a = stats(g.filter((r) => r.ag !== null && !r.agOut).map((r) => r.ag));
+      const out = g.filter((r) => r.lOut || r.agOut).length;
+      return `<tr><td class="l">${esc(d)}</td><td>${g.length}</td>
+        <td>${fmt(l.avg, 2)}</td><td>${fmt(l.min, 2)} ~ ${fmt(l.max, 2)}</td>
+        <td>${fmt(a.avg, 1)}</td><td>${fmt(a.min, 1)} ~ ${fmt(a.max, 1)}</td>
+        <td class="${out ? "bad" : ""}">${out}</td></tr>`;
+    }).join("");
+
+  $("byBatch").innerHTML = `
+    <tr><th class="l">로스팅 일자</th><th class="l">배전기</th><th>배치</th><th>기준 L</th>
+        <th>L값</th><th>Agtron</th><th class="l">표시</th></tr>` +
+    sel.map((r) => {
+      const tags = (r.lOut ? `<span class="tag r">L 범위 밖</span>` : "") +
+                   (r.agOut ? `<span class="tag r">Agtron 중간값 ±5 밖</span>` : "") +
+                   (r.check ? `<span class="tag y">판독 확인</span>` : "");
+      return `<tr class="${r.lOut || r.agOut ? "outlier" : ""}">
+        <td class="l">${esc(r.date)}</td><td class="l">${esc(r.roaster)}</td><td>${r.batch ?? "-"}</td>
+        <td>${esc(r.baseL ?? "-")}</td>
+        <td class="${r.lOut ? "bad" : ""} ${r.L === null ? "check" : ""}">${fmt(r.L, 2)}</td>
+        <td class="${r.agOut ? "bad" : ""} ${r.ag === null ? "check" : ""}">${fmt(r.ag, 1)}</td>
+        <td class="l">${tags}</td></tr>`;
+    }).join("");
+}
+</script>
